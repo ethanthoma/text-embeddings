@@ -54,48 +54,44 @@ EMBEDDING_MODEL         = "text-embedding-ada-002"
 
 
 async def main(
-        processes: int, 
-        index: int, 
-        batch: int, 
-        size: int, 
-        verbose: bool
-    ) -> None:
+    index: int, 
+    batch: int, 
+    size: int, 
+    verbose: bool
+) -> None:
     logger.setLevel(
         logging.DEBUG if verbose else logging.INFO
     )
 
-    logger.debug("Initializating...")
-    queue = asyncio.Queue() # type: asyncio.Queue[int]
+    logger.debug("Initializating BigQuery API call tasks.")
 
+    bq_api_calls = asyncio.Queue() # type: asyncio.Queue[int]
     for n in range(ceil(size / batch)):
-        await queue.put((n * batch) + index)
+        bq_api_calls.put_nowait((n * batch) + index)
 
-    processors = [
-        asyncio.create_task(job(queue, batch)) 
-        for _ in range(processes)
-    ]
-    logger.debug("Created tasks.")
+    logger.debug("Starting tasks...")
+    asyncio.create_task(
+        job(bq_api_calls, batch)
+    )
 
-    await queue.join()
-    for processor in processors:
-        processor.cancel()
+    await bq_api_calls.join()
 
 
 async def job(queue: asyncio.queues.Queue, batch_size: int) -> None:
     async with aiohttp.ClientSession() as session:
         bq = bigquery.Client()
         storage = Storage(session=session)
-
+        
         while True:
             index = await queue.get()
             logger.info(
-                f"Job start: at index {index} "
+                f"Job #{index} start: "
                 f"with estimated size {batch_size}."
             )
             start = time.perf_counter()
 
+            # fetch query data
             query = make_query(index, batch_size)
-
             df = await bq_query(bq, query)
 
             df = await embed_text(
@@ -125,6 +121,7 @@ async def job(queue: asyncio.queues.Queue, batch_size: int) -> None:
 def make_query(index: int, size: int) -> str:
     """A query to fetch a batch of data"""
     logger.debug("Creating query...")
+
     return f"""
         SELECT r.review_id, r.text
         FROM Yelp_review_text.reviews r
@@ -152,7 +149,9 @@ async def bq_query(bq: bigquery.client.Client, query: str) -> pd.DataFrame:
     job = await loop.run_in_executor(None, bq.query, query)
     job.add_done_callback(callback)
 
-    return await future
+    df = await future
+    logger.debug("Query fetched.")
+    return df
 
 
 async def embed_text(
@@ -176,21 +175,36 @@ async def embed_text(
         df["n_tokens"],
         context_size
     )
+    
+    openai_queue = asyncio.Queue() # type: asyncio.Queue[pd.Series]
 
     grouped = df.groupby('group')
-
-    tasks = []
     for _, group in grouped:
-        task = asyncio.create_task(
-            batch_get_embeddings_from_series_as_df(
-                group[text_column], 
+        openai_queue.put_nowait(group[text_column])
+
+    tasks = [] # type: list[pd.DataFrame]
+    while not openai_queue.empty():
+        text_column_series = await openai_queue.get()
+
+        logger.info("Attempting to fetch embeddings...")
+
+        try: 
+            response = await batch_get_embeddings_from_series_as_df(
+                text_column_series,
                 embedding_model,
                 embedding_size
             )
-        )
-        tasks.append(task)
+            
+            logger.info("Fetched embeddings.")
 
-    embeddings = pd.concat(await asyncio.gather(*tasks))
+            tasks.append(response)
+        except ( Exception ) as e:
+            logger.warn(
+                "Failed to fetch embeddings with backoff, adding back to queue."
+            )
+            openai_queue.put_nowait(text_column_series)
+
+    embeddings = pd.concat(tasks)
 
     df = df.drop([text_column, 'group'], axis=1)
     df = pd.merge(df, embeddings, left_index=True, right_index=True)
@@ -311,20 +325,16 @@ async def upload_df_to_storage(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "-p", "--processes", type=int, default=1, 
-        help="Number of workers"
-    )
-    parser.add_argument(
         "-i", "--index", type=int, default=0, 
-        help="Starting index in the dataset"
+        help="Starting index in the BigQuery dataset"
     )
     parser.add_argument(
         "-b", "--batch", type=int, default=2, 
-        help="Size of batches per each worker"
+        help="Batch sizes to pull from BigQuery"
     )
     parser.add_argument(
         "-s", "--size", type=int, default=5, 
-        help="Size of the dataset"
+        help="Size of the BigQuery dataset"
     )
     parser.add_argument(
         "-v", "--verbose", action='store_true', 
