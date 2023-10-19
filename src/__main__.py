@@ -32,7 +32,7 @@ import tiktoken
 
 # push to bucket
 from gcloud.aio.storage import Storage
-from io import StringIO
+import tempfile
 
 
 logging.basicConfig()
@@ -305,18 +305,22 @@ def get_batch_embedding_of_text(
 
 
 async def upload_df_to_storage(
-        storage: Storage, 
-        df: pd.DataFrame, 
-        filename: str
-    ) -> None:
+    storage: Storage, 
+    df: pd.DataFrame, 
+    filename: str
+) -> None:
     """Uploads a dataframe to Google Cloud Storage"""
     logger.debug("Uploading to storage...")
     start = time.perf_counter()
 
-    csv_buffer = StringIO()
-    df.to_csv(csv_buffer, index=False)
-    csv_data = csv_buffer.getvalue()
-    await storage.upload(BUCKET_NAME, filename, csv_data)
+    with tempfile.NamedTemporaryFile(
+        mode='w+', 
+        suffix='.csv', 
+        delete=False
+    ) as f:
+        df.to_csv(f, index=False)
+        f.seek(0)
+        await storage.upload(BUCKET_NAME, filename, f.read())
 
     end = time.perf_counter() - start
     logger.debug(f"Uploading took {end:0.2f} seconds.")
