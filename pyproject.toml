@@ -24,7 +24,9 @@ db-dtypes = "^1.1.1"
 mypy = "^1.6.1"
 pandas-stubs = "^2.1.1.230928"
 numpy = "^1.26.1"
-gcloud-aio-storage = "^9.0.0"
+types-aiofiles = "^23.2.0.0"
+google-cloud-storage = "^2.12.0"
+aiofiles = "^23.2.1"
 
 [build-system]
 requires = ["poetry-core"]

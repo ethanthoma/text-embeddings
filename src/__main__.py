@@ -1,6 +1,9 @@
 # if you don't have IAM for gcloud project quotas
 import warnings
-warnings.filterwarnings("ignore", "Your application has authenticated using end user credentials")
+warnings.filterwarnings(
+    "ignore", 
+    "Your application has authenticated using end user credentials"
+)
 
 
 # generic
@@ -31,12 +34,18 @@ from tenacity import (
 import tiktoken
 
 # push to bucket
-from gcloud.aio.storage import Storage
-import tempfile
+from google.cloud import storage
+from io import BytesIO
 
 
 logging.basicConfig()
 logger = logging.getLogger(__name__)
+
+
+# argument defaults
+ARG_DEFAULT_INDEX       = 0
+ARG_DEFAULT_BATCH       = 10
+ARG_DEFAULT_SIZE        = 20
 
 
 openai.api_key = os.environ["POETRY_OPENAI_API_KEY"]
@@ -69,19 +78,27 @@ async def main(
     for n in range(ceil(size / batch)):
         bq_api_calls.put_nowait((n * batch) + index)
 
+    gcs_reqs = []
+
     logger.debug("Starting tasks...")
     asyncio.create_task(
-        job(bq_api_calls, batch)
+        job(bq_api_calls, gcs_reqs, batch)
     )
 
     await bq_api_calls.join()
 
+    await asyncio.gather(*gcs_reqs)
 
-async def job(queue: asyncio.queues.Queue, batch_size: int) -> None:
+
+async def job(
+    bq_api_calls: asyncio.Queue[int], 
+    gcs_reqs: list,
+    batch_size: int
+) -> None:
     bq = bigquery.Client()
     
     while True:
-        index = await queue.get()
+        index = await bq_api_calls.get()
         logger.info(
             f"Job #{index} start: "
             f"with estimated size {batch_size}."
@@ -101,18 +118,24 @@ async def job(queue: asyncio.queues.Queue, batch_size: int) -> None:
             EMBEDDING_SPACE
         )
 
-        await upload_df_to_storage(
-            df, 
-            f"batch-index_{index}_to_{index + df.shape[0] - 1}"
-        )
+        index += 1950000
+        filename = f"batch-index_{index}_to_{index + df.shape[0] - 1}.csv"
 
-        end = time.perf_counter() - start
-        logger.info(
-            f"Job complete: took {end:0.2f} " 
-            f"seconds for index {index} to {index + df.shape[0] - 1}"
-        )
+        async def _save_with_log():
+            await save_df_to_file(df, filename, BUCKET_NAME)
 
-        queue.task_done()
+            end = time.perf_counter() - start
+            logger.info(
+                f"Job complete: took {end:0.2f} " 
+                f"seconds for index {index} to {index + df.shape[0] - 1}"
+            )
+
+        save_task = asyncio.create_task(
+            _save_with_log()
+        )
+        gcs_reqs.append(save_task)
+
+        bq_api_calls.task_done()
 
 
 def make_query(index: int, size: int) -> str:
@@ -122,9 +145,7 @@ def make_query(index: int, size: int) -> str:
     return f"""
         SELECT r.review_id, r.text
         FROM Yelp_review_text.reviews r
-        JOIN Yelp_review_text.business b 
-        ON r.business_id = b.business_id
-        WHERE b.state != 'BC'
+        WHERE r.date > TIMESTAMP "2015-04-20 06:24:29 UTC"
         ORDER BY r.date
         LIMIT {size}
         OFFSET {index};
@@ -301,44 +322,111 @@ def get_batch_embedding_of_text(
     return embeddings_df
 
 
-async def upload_df_to_storage(df, filename):
-    """Uploads a dataframe to Google Cloud Storage"""
-    logger.debug("Uploading to storage...")
+async def save_df_to_file(
+    df: pd.DataFrame,
+    filename: str,
+    bucket_name: str
+) -> None:
+    """Non-blocking call to save dataframe to file"""
+    logger.info("Saving dataframe...")
+    loop = asyncio.get_event_loop()
 
-    async with aiohttp.ClientSession() as session:
-        storage = Storage(session=session)
+    file_obj = dataframe_to_bytesio(df)
 
-        with tempfile.NamedTemporaryFile(mode='w+', suffix='.csv', delete=False) as f:
-            tmp_filename = f.name
+    async def _upload():
+        try:
+            await loop.run_in_executor(
+                None, 
+                upload_to_gcs, 
+                file_obj, 
+                filename,
+                bucket_name 
+            )
+        except Exception as e:
+            logger.error(f"Failed to upload to GCS: {e}")
+            await loop.run_in_executor(
+                None,
+                save_locally,
+                file_obj,
+                filename
+            )
 
-        async with aiofiles.open(tmp_filename, mode='w') as f:
-            await f.write(df.to_csv(index=False))
+    await _upload()
 
-        with open(tmp_filename, 'rb') as f:
-            await storage.upload(BUCKET_NAME, filename, f.read())
+
+def dataframe_to_bytesio(df: pd.DataFrame) -> BytesIO:
+    """Convert dataframe to bytes"""
+    buffer = BytesIO()
+    df.to_csv(buffer, index=False)
+    buffer.seek(0)
+    return buffer
+
+
+def upload_to_gcs(
+    file_obj: BytesIO,
+    filename: str,
+    bucket_name: str
+):
+    """Streams bytes of the dataframe to Google Cloud Storage"""
+    start = time.perf_counter()
+
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(filename)
+    file_obj.seek(0)
+    blob.upload_from_file(file_obj)
 
     end = time.perf_counter() - start
-    logger.debug(f"Uploading took {end:0.2f} seconds.")
+    logger.info(
+        f"Stream data uploaded to {filename} "
+        f"in bucket {bucket_name} in {end:0.2f} seconds."
+    )
+
+
+def save_locally(
+    file_obj: BytesIO, 
+    filename: str 
+):
+    """Save data locally"""
+    with open(filename, 'wb') as f_local:
+        file_obj.seek(0)
+        f_local.write(file_obj.read())
+
+    logger.info(f"Data saved locally at {filename}")
 
 
 if __name__ == "__main__":
+    """CLI argument settings"""
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "-i", "--index", type=int, default=0, 
-        help="Starting index in the BigQuery dataset"
-    )
-    parser.add_argument(
-        "-b", "--batch", type=int, default=2, 
+        "-b", 
+        "--batch", 
+        type=int, 
+        default=ARG_DEFAULT_BATCH, 
         help="Batch sizes to pull from BigQuery"
     )
     parser.add_argument(
-        "-s", "--size", type=int, default=5, 
+        "-s", 
+        "--size", 
+        type=int, 
+        default=ARG_DEFAULT_SIZE, 
         help="Size of the BigQuery dataset"
     )
     parser.add_argument(
-        "-v", "--verbose", action='store_true', 
+        "-i", 
+        "--index", 
+        type=int, 
+        default=ARG_DEFAULT_INDEX, 
+        help="Starting index in the BigQuery dataset"
+    )
+    parser.add_argument(
+        "-v", 
+        "--verbose", 
+        action='store_true', 
         help="Add to make verbose"
     )
+
+
     ns = parser.parse_args()
 
     logger = logging.getLogger(__name__)
