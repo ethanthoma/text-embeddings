@@ -4,16 +4,16 @@ warnings.filterwarnings("ignore", "Your application has authenticated using end 
 
 
 # generic
+import argparse
 import logging
 import numpy as np
 import pandas as pd
-import random
 import time
 
 # async
-import argparse
-import asyncio
+import aiofiles
 import aiohttp
+import asyncio
 
 # fetching data from google
 from google.cloud import bigquery
@@ -78,44 +78,41 @@ async def main(
 
 
 async def job(queue: asyncio.queues.Queue, batch_size: int) -> None:
-    async with aiohttp.ClientSession() as session:
-        bq = bigquery.Client()
-        storage = Storage(session=session)
-        
-        while True:
-            index = await queue.get()
-            logger.info(
-                f"Job #{index} start: "
-                f"with estimated size {batch_size}."
-            )
-            start = time.perf_counter()
+    bq = bigquery.Client()
+    
+    while True:
+        index = await queue.get()
+        logger.info(
+            f"Job #{index} start: "
+            f"with estimated size {batch_size}."
+        )
+        start = time.perf_counter()
 
-            # fetch query data
-            query = make_query(index, batch_size)
-            df = await bq_query(bq, query)
+        # fetch query data
+        query = make_query(index, batch_size)
+        df = await bq_query(bq, query)
 
-            df = await embed_text(
-                df, 
-                TEXT_COLUMN,
-                EMBEDDING_ENCODING,
-                EMBEDDING_MODEL,
-                EMBEDDING_CTX_LENGTH,
-                EMBEDDING_SPACE
-            )
+        df = await embed_text(
+            df, 
+            TEXT_COLUMN,
+            EMBEDDING_ENCODING,
+            EMBEDDING_MODEL,
+            EMBEDDING_CTX_LENGTH,
+            EMBEDDING_SPACE
+        )
 
-            await upload_df_to_storage(
-                storage, 
-                df, 
-                f"batch-index_{index}_to_{index + df.shape[0] - 1}"
-            )
+        await upload_df_to_storage(
+            df, 
+            f"batch-index_{index}_to_{index + df.shape[0] - 1}"
+        )
 
-            end = time.perf_counter() - start
-            logger.info(
-                f"Job complete: took {end:0.2f} " 
-                f"seconds for index {index} to {index + df.shape[0] - 1}"
-            )
+        end = time.perf_counter() - start
+        logger.info(
+            f"Job complete: took {end:0.2f} " 
+            f"seconds for index {index} to {index + df.shape[0] - 1}"
+        )
 
-            queue.task_done()
+        queue.task_done()
 
 
 def make_query(index: int, size: int) -> str:
@@ -213,9 +210,9 @@ async def embed_text(
 
 
 def token_length_of_text(
-        text: pd.Series,
-        embedding_encoding: str
-    ) -> pd.Series:
+    text: pd.Series,
+    embedding_encoding: str
+) -> pd.Series:
     """Generate token length series from text series"""
     encoding = tiktoken.get_encoding(embedding_encoding)
 
@@ -304,23 +301,21 @@ def get_batch_embedding_of_text(
     return embeddings_df
 
 
-async def upload_df_to_storage(
-    storage: Storage, 
-    df: pd.DataFrame, 
-    filename: str
-) -> None:
+async def upload_df_to_storage(df, filename):
     """Uploads a dataframe to Google Cloud Storage"""
     logger.debug("Uploading to storage...")
-    start = time.perf_counter()
 
-    with tempfile.NamedTemporaryFile(
-        mode='w+', 
-        suffix='.csv', 
-        delete=False
-    ) as f:
-        df.to_csv(f, index=False)
-        f.seek(0)
-        await storage.upload(BUCKET_NAME, filename, f.read())
+    async with aiohttp.ClientSession() as session:
+        storage = Storage(session=session)
+
+        with tempfile.NamedTemporaryFile(mode='w+', suffix='.csv', delete=False) as f:
+            tmp_filename = f.name
+
+        async with aiofiles.open(tmp_filename, mode='w') as f:
+            await f.write(df.to_csv(index=False))
+
+        with open(tmp_filename, 'rb') as f:
+            await storage.upload(BUCKET_NAME, filename, f.read())
 
     end = time.perf_counter() - start
     logger.debug(f"Uploading took {end:0.2f} seconds.")
