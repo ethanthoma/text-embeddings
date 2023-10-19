@@ -1,4 +1,4 @@
-# My Personal Website
+# Non-blocking OpenAI embedding via Google Cloud
 
 This is code that to fetch OpenAI embeddings async.
 It does three things:
