@@ -12,6 +12,7 @@ import logging
 import numpy as np
 import pandas as pd
 import time
+from dataclasses import dataclass
 
 # async
 import aiofiles
@@ -51,22 +52,28 @@ ARG_DEFAULT_SIZE        = 20
 openai.api_key = os.environ["POETRY_OPENAI_API_KEY"]
 
 
-BUCKET_NAME             = "temp_embeddings"
-DATASET_NAME            = "Yelp_review_text"
-TABLE_NAME              = "reviews"
-TEXT_COLUMN             = "text"
+BASE_QUERY = """
+    SELECT r.review_id, r.text
+    FROM Yelp_review_text.reviews r
+    WHERE r.date > TIMESTAMP "2015-04-20 06:24:29 UTC"
+    ORDER BY r.date
+"""
 
 EMBEDDING_CTX_LENGTH    = 8191
 EMBEDDING_SPACE         = 1536
 EMBEDDING_ENCODING      = "cl100k_base"
 EMBEDDING_MODEL         = "text-embedding-ada-002"
+OPENAI_RPD_LIMIT        = 10_000
+TEXT_COLUMN             = "text"
 
+BUCKET_NAME             = "temp_embeddings"
 
 async def main(
     index: int, 
     batch: int, 
     size: int, 
-    verbose: bool
+    verbose: bool,
+    requests: int
 ) -> None:
     logger.setLevel(
         logging.DEBUG if verbose else logging.INFO
@@ -74,15 +81,15 @@ async def main(
 
     logger.debug("Initializating BigQuery API call tasks.")
 
-    bq_api_calls = asyncio.Queue() # type: asyncio.Queue[int]
+    bq_api_calls: asyncio.Queue[int] = asyncio.Queue()
     for n in range(ceil(size / batch)):
         bq_api_calls.put_nowait((n * batch) + index)
 
-    gcs_reqs = []
+    gcs_reqs: list[asyncio.Task] = []
 
     logger.debug("Starting tasks...")
     asyncio.create_task(
-        job(bq_api_calls, gcs_reqs, batch)
+        job(bq_api_calls, gcs_reqs, batch, requests)
     )
 
     await bq_api_calls.join()
@@ -93,11 +100,12 @@ async def main(
 async def job(
     bq_api_calls: asyncio.Queue[int], 
     gcs_reqs: list,
-    batch_size: int
+    batch_size: int,
+    open_ai_reqs_so_far: int
 ) -> None:
     bq = bigquery.Client()
     
-    while True:
+    while open_ai_reqs_so_far < OPENAI_RPD_LIMIT:
         index = await bq_api_calls.get()
         logger.info(
             f"Job #{index} start: "
@@ -106,18 +114,13 @@ async def job(
         start = time.perf_counter()
 
         # fetch query data
-        query = make_query(index, batch_size)
-        df = await bq_query(bq, query)
+        query_params = QueryParams(bq, index, batch_size)
+        df = await perform_query(query_params)
 
-        df = await embed_text(
-            df, 
-            TEXT_COLUMN,
-            EMBEDDING_ENCODING,
-            EMBEDDING_MODEL,
-            EMBEDDING_CTX_LENGTH,
-            EMBEDDING_SPACE
-        )
+        embed_params = EmbedParams(df, open_ai_reqs_so_far)
+        df, open_ai_reqs_so_far = await embed_text(embed_params)
 
+        # TEMP: adjust naming scheme with adjusted query
         index += 1950000
         filename = f"batch-index_{index}_to_{index + df.shape[0] - 1}.csv"
 
@@ -138,22 +141,32 @@ async def job(
         bq_api_calls.task_done()
 
 
+@dataclass
+class QueryParams:
+    client: bigquery.client.Client
+    index: int
+    batch_size: int
+
+
+async def perform_query(query_params: QueryParams):
+    logger.info("Performing query...")
+
+    query = make_query(query_params.index, query_params.batch_size)
+    df = await bq_query(query_params.client, query)
+
+    logger.info("Query fetched.")
+    return df
+
+
 def make_query(index: int, size: int) -> str:
-    """A query to fetch a batch of data"""
+    """Creates from base query and parameters"""
     logger.debug("Creating query...")
 
-    return f"""
-        SELECT r.review_id, r.text
-        FROM Yelp_review_text.reviews r
-        WHERE r.date > TIMESTAMP "2015-04-20 06:24:29 UTC"
-        ORDER BY r.date
-        LIMIT {size}
-        OFFSET {index};
-    """
+    return BASE_QUERY + f"\nLIMIT {size}\nOFFSET {index};"
 
 
 async def bq_query(bq: bigquery.client.Client, query: str) -> pd.DataFrame:
-    """Async BigQuery.query()"""
+    """Non-blocking BigQuery.query()"""
     logger.debug("Sending query...")
 
     loop = asyncio.get_event_loop()
@@ -167,53 +180,61 @@ async def bq_query(bq: bigquery.client.Client, query: str) -> pd.DataFrame:
     job = await loop.run_in_executor(None, bq.query, query)
     job.add_done_callback(callback)
 
-    df = await future
-    logger.debug("Query fetched.")
-    return df
+    return await future
 
 
-async def embed_text(
-    df: pd.DataFrame,
-    text_column: str,
-    embedding_encoding: str,
-    embedding_model: str,
-    context_size: int,
-    embedding_size: int
-) -> pd.DataFrame:
+@dataclass
+class EmbedParams:
+    df: pd.DataFrame
+    total_requests: int
+    text_column: str                = TEXT_COLUMN
+    embedding_encoding: str         = EMBEDDING_ENCODING
+    embedding_model: str            = EMBEDDING_MODEL
+    context_size: int               = EMBEDDING_CTX_LENGTH
+    embedding_size: int             = EMBEDDING_SPACE
+    requests_per_day_limit: int     = OPENAI_RPD_LIMIT
+
+
+async def embed_text(embed_params: EmbedParams) -> tuple[pd.DataFrame, int]:
     """Embeds the text column of dataframe, adds it at columns, and adds the 
     token count"""
-    logger.debug("Embedding text...")
+    logger.info("Embedding text...")
+
+    reqs = embed_params.total_requests
+
+    df = embed_params.df
 
     df["n_tokens"] = token_length_of_text(
-        df[text_column],
-        embedding_encoding
+        df[embed_params.text_column],
+        embed_params.embedding_encoding
     )
 
     df['group'] = label_text_series_into_subgroups_within_context_size(
         df["n_tokens"],
-        context_size
+        embed_params.context_size
     )
     
-    openai_queue = asyncio.Queue() # type: asyncio.Queue[pd.Series]
+    openai_queue: asyncio.Queue[pd.Series] = asyncio.Queue()
 
     grouped = df.groupby('group')
     for _, group in grouped:
-        openai_queue.put_nowait(group[text_column])
+        openai_queue.put_nowait(group[embed_params.text_column])
 
-    tasks = [] # type: list[pd.DataFrame]
-    while not openai_queue.empty():
+    tasks: list[pd.DataFrame] = []
+    while not openai_queue.empty() or reqs >= embed_params.requests_per_day_limit:
         text_column_series = await openai_queue.get()
 
-        logger.info("Attempting to fetch embeddings...")
+        logger.debug("Attempting to fetch embeddings...")
 
         try: 
             response = await batch_get_embeddings_from_series_as_df(
                 text_column_series,
-                embedding_model,
-                embedding_size
+                embed_params.embedding_model,
+                embed_params.embedding_size
             )
+            reqs += 1
             
-            logger.info("Fetched embeddings.")
+            logger.debug("Fetched embeddings.")
 
             tasks.append(response)
         except ( Exception ) as e:
@@ -224,10 +245,12 @@ async def embed_text(
 
     embeddings = pd.concat(tasks)
 
-    df = df.drop([text_column, 'group'], axis=1)
+    df = df.drop([embed_params.text_column, 'group'], axis=1)
     df = pd.merge(df, embeddings, left_index=True, right_index=True)
 
-    return df
+    logger.info(f"Total requests to OpenAI so far: {reqs}")
+
+    return df, reqs
 
 
 def token_length_of_text(
@@ -424,6 +447,13 @@ if __name__ == "__main__":
         "--verbose", 
         action='store_true', 
         help="Flag to make logger more verbose"
+    )
+    parser.add_argument(
+        "-r", 
+        "--requests", 
+        type=int, 
+        default=0, 
+        help="Number of requests to OpenAI already used for today"
     )
 
 
