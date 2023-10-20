@@ -423,7 +423,7 @@ if __name__ == "__main__":
         "-v", 
         "--verbose", 
         action='store_true', 
-        help="Add to make verbose"
+        help="Flag to make logger more verbose"
     )
 
 

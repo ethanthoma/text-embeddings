@@ -1,36 +1,48 @@
 # Non-blocking OpenAI embedding via Google Cloud
 
-This is code that to fetch OpenAI embeddings async.
 It does three things:
-- Perform a SQL query to Google BigQuery to fetch a batch size of data
-- Chunk the batch within token limits and submit batch requests to OpenAI
-- Merge OpenAI responses for the batch and upload to Google Cloud Storage
+- Performs an SQL query to Google BigQuery to fetch a batch size of data
+- Chunk the batch within token limits and submit chunked requests to OpenAI
+- Merge chunk responses back into a batch and upload to Google Cloud Storage
 
 All blocking functions are wrapped in aioasync wrappers.
 
-It performs both exponential backoff and requeue of failed embedding requests
-until the batch is finished. Due to GPT's request limits, multiple threads 
-wouldn't make a difference as most requests are around every 0.4 to 0.7 seconds.
+The embedding calls to OpenAI use both exponential backoff and a requeue for any
+failed requests that still failed after the backoff. 
 
-I use Google Cloud AIO Storage library for uploading. As far as I could tell, I
-could not get this to work async. so it is currently a sync call. I could not 
-stream it either... :(
+**THIS ASSUMES YOUR API CALL TO OPENAI HAS NO MISTAKES AS IT WILL NEVER STOP TO
+RETRY FAILED CALLS**
 
-## 1: Building
+Due to GPT's request limits, multiple threads wouldn't make a difference as most 
+requests are around every 0.4 to 0.7 seconds which is faster than the 1 second
+threshold. This may change in the future or if you are lucky enough to get more
+RPM.
 
-You can build the code by running the following commands:
-- `nix develop -i` in the root dir of the project
-- `poetry install`
-
-This "module" relies on `python=">=3.9,<3.13"`.
+It streams the batched data back into Google Cloud Storage. If it fails for any 
+reason, it gets saved locally.
 
 ## 2: Running
 
 To run the code, you will need to do two things:
-- set required environment varibales of `POETRY_OPENAI_API_KEY` in a `.env`
-- update the function `make_query`
+- set the required environment variable of `POETRY_OPENAI_API_KEY` in a `.env` 
+file in the root so poetry can read it into the environment
+- update the function `make_query` to perform the query you want to perform
 
-Afterwards, you can simply run through nix and poetry:
-- `nix deploy -i`
+Afterwards, you can run the program through nix and poetry:
+- `nix develop -i` in the root dir of the project
 - `poetry run python src`
+- `poetry install`
 
+This "module" relies on `python=">=3.9,<3.13"`.
+
+## 3: Guide
+
+There is a help command available via `-h` or `--help`. The full list of 
+commands are below:
+
+| short | long      | action                                 |
+|-------|-----------|----------------------------------------|
+| -b    | --batch   | Batch sizes to pull from BigQuery      |
+| -s    | --size    | Size of the BigQuery dataset           |
+| -i    | --index   | Starting index in the BigQuery dataset |
+| -v    | --verbose | Flag to make logger more verbose       |
