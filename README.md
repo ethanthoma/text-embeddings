@@ -8,10 +8,13 @@ It does three things:
 All blocking functions are wrapped in aioasync wrappers.
 
 The embedding calls to OpenAI use both exponential backoff and a requeue for any
-failed requests that still failed after the backoff. 
+failed requests that still failed after the backoff. There is a parameter to set
+your daily limit of requests to OpenAI. After hitting the limit, it will stop 
+making requests and save the current progress to storage.
 
-**THIS ASSUMES YOUR API CALL TO OPENAI HAS NO MISTAKES AS IT WILL NEVER STOP TO
-RETRY FAILED CALLS**
+**NOTE: since it retries your request until it your limit, it is possible for a
+bad request to repeat and use all of your daily limit. Make sure your text 
+column in your query matches the text column set by the constant.**
 
 Due to GPT's request limits, multiple threads wouldn't make a difference as most 
 requests are around every 0.4 to 0.7 seconds which is faster than the 1 second
@@ -40,9 +43,10 @@ This "module" relies on `python=">=3.9,<3.13"`.
 There is a help command available via `-h` or `--help`. The full list of 
 commands are below:
 
-| short | long      | action                                 |
-|-------|-----------|----------------------------------------|
-| -b    | --batch   | Batch sizes to pull from BigQuery      |
-| -s    | --size    | Size of the BigQuery dataset           |
-| -i    | --index   | Starting index in the BigQuery dataset |
-| -v    | --verbose | Flag to make logger more verbose       |
+| short | long       | action                                               |
+|-------|------------|------------------------------------------------------|
+| -b    | --batch    | Batch sizes to pull from BigQuery                    |
+| -s    | --size     | Size of the BigQuery dataset                         |
+| -i    | --index    | Starting index in the BigQuery dataset               |
+| -v    | --verbose  | Flag to make logger more verbose                     |
+| -r    | --requests | Number of requests to OpenAI already used for today  |

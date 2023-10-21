@@ -29,7 +29,14 @@
                     set -a; source .env; set +a
 
                     gcloud config set project $POETRY_PROJECT_ID
-                    gcloud auth application-default login
+
+                    DEFAULT_CREDENTIALS_FILE="$HOME/.config/gcloud/application_default_credentials.json"
+                    if [ -f "$DEFAULT_CREDENTIALS_FILE" ]; then
+                        echo "Default credentials found. You are likely authenticated."
+                    else
+                        echo "Default credentials not found. Attempting to authenticate..."
+                        gcloud auth application-default login
+                    fi
                 '';
             };
         }
