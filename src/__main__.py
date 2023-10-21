@@ -268,6 +268,7 @@ async def embed_dataframe(
     processed_batches: int = 0
     total_batches: int = 0
     total_time_for_embeddings: float = 0.
+    total_length_so_far: int = 0
 
     # chunk text column into groups
     openai_queue: asyncio.Queue[pd.Series] = asyncio.Queue()
@@ -296,12 +297,13 @@ async def embed_dataframe(
 
             # printing status
             processed_batches += 1
+            total_length_so_far += len(text_column_series)
             end_time = time.perf_counter() - start_time
             total_time_for_embeddings += end_time
             print_progress_bar(
                 processed_batches, 
                 total_batches, 
-                len(text_column_series) / total_time_for_embeddings
+                total_length_so_far / total_time_for_embeddings
             )
 
             tasks.append(response)
@@ -321,6 +323,8 @@ async def async_wrap_get_embeddings(
     """Fetch OpenAI embeddings."""
     logger.debug("Fetching OpenAI embeddings...")
 
+    start_time = time.perf_counter()
+
     loop = asyncio.get_event_loop()
 
     embeddings_df = await loop.run_in_executor(
@@ -332,7 +336,9 @@ async def async_wrap_get_embeddings(
         }
     )
 
-    logger.debug("Fetched embeddings.")
+    end_time = time.perf_counter() - start_time
+
+    logger.debug(f"Fetched {len(text)} embeddings in {end_time} seconds.")
 
     return embeddings_df
 
