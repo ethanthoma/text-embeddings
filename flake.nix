@@ -20,14 +20,19 @@
                 ];
 
                 shellHook = ''
+                    # set home locally
                     mkdir -p $PWD/.home
                     export HOME=$PWD/.home
+
+                    # numpy
                     export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath buildInputs}:$LD_LIBRARY_PATH"
                     export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib.outPath}/lib:$LD_LIBRARY_PATH"
                     poetry install
 
+                    # source environments
                     set -a; source .env; set +a
 
+                    # gcloud
                     gcloud config set project $POETRY_PROJECT_ID
 
                     DEFAULT_CREDENTIALS_FILE="$HOME/.config/gcloud/application_default_credentials.json"

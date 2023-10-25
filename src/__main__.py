@@ -6,13 +6,16 @@ warnings.filterwarnings(
 )
 
 
+# typing
+from dataclasses import dataclass
+from typing import Callable
+
 # generic
 import argparse
 import logging
 import numpy as np
 import pandas as pd
 import time
-from dataclasses import dataclass
 
 # async
 import aiofiles
@@ -55,7 +58,7 @@ openai.api_key = os.environ["POETRY_OPENAI_API_KEY"]
 BASE_QUERY = """
     SELECT r.review_id, r.text as text
     FROM Yelp_review_text.reviews r
-    WHERE r.date > TIMESTAMP "2015-04-20 06:24:29 UTC"
+    WHERE r.date > TIMESTAMP "2018-03-23 18:41:10 UTC"
     ORDER BY r.date
 """
 
@@ -105,10 +108,9 @@ async def job(
     
     while open_ai_reqs_so_far < OPENAI_RPD_LIMIT:
         index = await bq_api_calls.get()
-        logger.info(
-            f"Job #{index} start: "
-            f"with estimated size {batch_size}."
-        )
+
+        print("Job starting...")
+
         start = time.perf_counter()
 
         # fetch query data
@@ -123,7 +125,7 @@ async def job(
         )
 
         # TEMP: adjust naming scheme with adjusted query
-        index += 1950000
+        index += 4_266_797
         filename = f"batch-index_{index}_to_{index + df.shape[0] - 1}.csv"
         save_df_to_file_params = SaveDFToFileParams(df, filename)
 
@@ -132,8 +134,7 @@ async def job(
 
             end = time.perf_counter() - start
             logger.info(
-                f"Job complete: took {end:0.2f} " 
-                f"seconds for index {index} to {index + df.shape[0] - 1}"
+                f"Job complete: {end:0.2f} seconds for {df.shape[0]} rows of text." 
             )
 
         save_task = asyncio.create_task(
@@ -142,6 +143,8 @@ async def job(
         gcs_reqs.append(save_task)
 
         bq_api_calls.task_done()
+
+    print(f"Total requests made during run: {open_ai_reqs_so_far}")
 
 
 @dataclass
@@ -286,24 +289,26 @@ async def embed_dataframe(
     while remaining_chunks() and remaining_requests():
         text_column_series = await openai_queue.get()
 
-        start_time = time.perf_counter()
-
         try: 
+            start_time = time.perf_counter()
+
             response = await async_wrap_get_embeddings(
                 text_column_series,
                 embed_params
             )
             total_requests += 1
-
-            # printing status
             processed_batches += 1
-            total_length_so_far += len(text_column_series)
+
+
             end_time = time.perf_counter() - start_time
             total_time_for_embeddings += end_time
+
+            total_length_so_far += len(text_column_series)
             print_progress_bar(
                 processed_batches, 
                 total_batches, 
-                total_length_so_far / total_time_for_embeddings
+                total_length_so_far / total_time_for_embeddings,
+                lambda: not (remaining_chunks() and remaining_requests())
             )
 
             tasks.append(response)
@@ -376,7 +381,8 @@ def get_embeddings(
 def print_progress_bar (
     processed_batches: int, 
     total: int, 
-    avg_embeddings_per_sec: float
+    avg_embeddings_per_sec: float,
+    conditional: Callable[[], bool]
 ):
     """Call in a loop to create terminal progress bar"""
     bar_length = 50
@@ -385,7 +391,7 @@ def print_progress_bar (
     filled_length = int(bar_length * processed_batches // total)
     bar = "█" * filled_length + '-' * (bar_length - filled_length)
     print(f"\rProgress: |{bar}| {percent}% : {avg_embeddings}", end = "\r")
-    if processed_batches == total: 
+    if conditional(): 
         print()
 
 
