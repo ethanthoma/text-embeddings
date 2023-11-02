@@ -36,10 +36,11 @@ commands are below:
 
 ## 3: Deets
 
-The embedding calls to OpenAI use both exponential backoff. There is a parameter 
-to set your daily limit of requests to OpenAI. After hitting the limit, it will 
-stop making requests and save the current progress to storage. The rest will be 
-stored locally that you can choose to embed later.
+The embedding calls to OpenAI use both exponential backoff and multiple thread.
+There is a parameter to set your request limits for OpenAI in `embed.py` or in 
+the `__main__.py`. After hitting the limit, it will stop making requests and 
+save the current progress to storage. The rest will be stored locally that you 
+can choose to embed later.
 
 **NOTE: I plan to autoload any locally stored chunks that were not embedded.**
 
