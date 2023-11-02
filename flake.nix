@@ -13,6 +13,7 @@
         in {
             devShell = with pkgs; pkgs.mkShell rec {
                 buildInputs = [
+                    # build
                     python39
                     poetry
                     zlib
@@ -21,16 +22,24 @@
 
                 shellHook = ''
                     # set home locally
-                    mkdir -p $PWD/.home
-                    export HOME=$PWD/.home
+                    LOCAL_HOME=$PWD/.home
+                    mkdir -p $LOCAL_HOME
+
+                    # dev env within shell
+                    ln -s $HOME/.config/nvim $LOCAL_HOME/.config/nvim
+                    ln -s $HOME/.config/starship.toml $LOCAL_HOME/.config/starship.toml
+
+                    export HOME=$LOCAL_HOME
 
                     # numpy
                     export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath buildInputs}:$LD_LIBRARY_PATH"
                     export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib.outPath}/lib:$LD_LIBRARY_PATH"
-                    poetry install
 
-                    # source environments
+                    # source environment variables
                     set -a; source .env; set +a
+
+                    # install python packages
+                    poetry install
 
                     # gcloud
                     gcloud config set project $POETRY_PROJECT_ID

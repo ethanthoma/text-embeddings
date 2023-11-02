@@ -1,44 +1,26 @@
-# Non-blocking OpenAI embedding via Google Cloud
+# Multithreaded OpenAI embedding via Google Cloud
 
-It does three things:
-- Performs an SQL query to Google BigQuery to fetch a batch size of data
-- Chunk the batch within token limits and submit chunked requests to OpenAI
-- Merge chunk responses back into a batch and upload to Google Cloud Storage
+It does four things:
+- Query: generate ordered SQL queries limited to a batch size
+- Fetch: query GCS BigQuery and save locally
+- Embed: chunk the fetched data and embed the text, saves locally
+- Store: uploads to GCS Storage
 
-All blocking functions are wrapped in aioasync wrappers.
+## 1. Use
 
-The embedding calls to OpenAI use both exponential backoff and a requeue for any
-failed requests that still failed after the backoff. There is a parameter to set
-your daily limit of requests to OpenAI. After hitting the limit, it will stop 
-making requests and save the current progress to storage.
+```
+This "module" relies on python=">=3.9,<3.13".
+````
 
-**NOTE: since it retries your request until it your limit, it is possible for a
-bad request to repeat and use all of your daily limit. Make sure your text 
-column in your query matches the text column set by the constant.**
+I used poetry to manage my libraries, you will need to too. As it uses OpenAI
+and GCS, you will have to authenticate for both. GCS should be done via the CLI
+and OpenAI requires you to set the environment of `POETRY_OPENAI_API_KEY`. Then,
+you can simply enter `poetry install` and then `poetry run python src`.
 
-Due to GPT's request limits, multiple threads wouldn't make a difference as most 
-requests are around every 0.4 to 0.7 seconds which is faster than the 1 second
-threshold. This may change in the future or if you are lucky enough to get more
-RPM.
+You will probably want to change the query performed. It is currently stored in
+`src/query.py`. It **must** have an order attribute.
 
-It streams the batched data back into Google Cloud Storage. If it fails for any 
-reason, it gets saved locally.
-
-## 2: Running
-
-To run the code, you will need to do two things:
-- set the required environment variable of `POETRY_OPENAI_API_KEY` in a `.env` 
-file in the root so poetry can read it into the environment
-- update the function `make_query` to perform the query you want to perform
-
-Afterwards, you can run the program through nix and poetry:
-- `nix develop -i` in the root dir of the project
-- `poetry run python src`
-- `poetry install`
-
-This "module" relies on `python=">=3.9,<3.13"`.
-
-## 3: Guide
+## 2: Guide
 
 There is a help command available via `-h` or `--help`. The full list of 
 commands are below:
@@ -46,7 +28,18 @@ commands are below:
 | short | long       | action                                               |
 |-------|------------|------------------------------------------------------|
 | -b    | --batch    | Batch sizes to pull from BigQuery                    |
-| -s    | --size     | Size of the BigQuery dataset                         |
+| -B    | --bucket   | Name of GCS bucket                                   |
 | -i    | --index    | Starting index in the BigQuery dataset               |
-| -v    | --verbose  | Flag to make logger more verbose                     |
+| -s    | --size     | Size of the BigQuery dataset                         |
 | -r    | --requests | Number of requests to OpenAI already used for today  |
+| -w    | --workers  | Number of worker threads for calling OpenAI API      |
+
+## 3: Deets
+
+The embedding calls to OpenAI use both exponential backoff. There is a parameter 
+to set your daily limit of requests to OpenAI. After hitting the limit, it will 
+stop making requests and save the current progress to storage. The rest will be 
+stored locally that you can choose to embed later.
+
+**NOTE: I plan to autoload any locally stored chunks that were not embedded.**
+

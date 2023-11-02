@@ -9,3 +9,6 @@ src/__pycache__/*
 
 # logging
 logfile.log
+
+# cache
+cache
