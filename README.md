@@ -36,7 +36,7 @@ commands are below:
 
 ## 3: Deets
 
-The embedding calls to OpenAI use both exponential backoff and multiple thread.
+The embedding calls to OpenAI use both exponential backoff and multiple threads.
 There is a parameter to set your request limits for OpenAI in `embed.py` or in 
 the `__main__.py`. After hitting the limit, it will stop making requests and 
 save the current progress to storage. The rest will be stored locally that you 
