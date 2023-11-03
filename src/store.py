@@ -11,12 +11,13 @@ from typing import Callable
 
 # local
 from service import BaseService
-from message import Message
+from event import Message
 
 
 @dataclass
 class StoreParams:
     bucket_name: str
+    embedded_file_dir: str      = "./cache"
 
 
 class StoreService(BaseService):
@@ -35,14 +36,11 @@ class StoreService(BaseService):
             return
 
         filename = embed_filename_queue.get()
-        df = pd.read_csv(filename)
+        path = f"{self.store_params.embedded_file_dir}/{filename}"
+        df = pd.read_csv(path)
 
-        basename = os.path.basename(os.path.normpath(filename))
         file_obj = self.dataframe_to_bytesio(df)
-        success = self.upload_to_gcs(file_obj, basename)
-
-        if success:
-            os.remove(filename)
+        success = self.upload_to_gcs(file_obj, filename)
 
 
     def dataframe_to_bytesio(self, df: pd.DataFrame) -> BytesIO:

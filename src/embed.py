@@ -18,7 +18,8 @@ from threading import Lock
 
 # local
 from service import BaseService
-from message import Message
+from event import Message
+from token_rate_limiter import TokenRateLimiter
 
 
 @dataclass
@@ -29,6 +30,7 @@ class EmbedParams:
     text_column: str            = "text"
     requests_per_day_limit: int = 10_000
     requests_per_min_limit: int = 500
+    tokens_per_min_limit: int   = 1_000_000
     embedding_encoding: str     = "cl100k_base"
     embedding_model: str        = "text-embedding-ada-002"
     context_size: int           = 8_191
@@ -41,19 +43,28 @@ class EmbedParams:
 
 
 class EmbedService(BaseService):
+
     def __init__(self, embed_params: EmbedParams) -> None:
         super().__init__()
         self.embed_params = embed_params
 
-        self.on_empty: Callable = lambda: time.sleep(1)
+        self.on_empty: Callable = lambda: None
+
         self.api_calls: int = embed_params.requests_so_far
         self.api_lock = Lock()
         self.rate_limit = RateLimit(
-            max_count=self.embed_params.requests_per_min_limit,
+            max_count=embed_params.requests_per_min_limit,
             per=60
         )
-
         openai.api_key = embed_params.openai_key
+
+        self.tokens_embedded = 0
+        self.token_lock = Lock()
+
+        self.token_rate_limiter = TokenRateLimiter(
+            max_tokens_per_minute=embed_params.tokens_per_min_limit
+        )
+
 
     def process(
         self,
@@ -61,66 +72,30 @@ class EmbedService(BaseService):
         embed_filename_queue: mp.Queue[str]
     ) -> None:
         if raw_filename_queue.empty():
+            time.sleep(1)
             self.on_empty()
             return
 
         filename = raw_filename_queue.get()
-        df = pd.read_csv(filename)
+        path = f"{self.embed_params.cache_dir}/{filename}"
+        df = pd.read_csv(path)
 
         df["n_tokens"] = self.token_count(df[self.embed_params.text_column])
         chunks = self.chunk_dataframe(df)
         chunks = self.parallel_embed_chunks(chunks)
 
-        basename = os.path.basename(os.path.normpath(filename))
         embedded_df = pd.concat(chunks)
 
         if len(embedded_df.index) != 0:
             embedded_filename = (
-                f"{self.embed_params.embedded_file_dir}/"
-                f"{self.embed_params.embedded_file_suffix}_"
-                f"{basename}"
+                    f"{self.embed_params.embedded_file_suffix}_"
+                    f"{filename}"
             )
-            embedded_df.to_csv(embedded_filename)
+            self.save_embeddings(embedded_df, embedded_filename)
             embed_filename_queue.put(embedded_filename)
 
-        if df.shape[0] != embedded_df.shape[0]:
-            unembedded_indices = df.index.difference(embedded_df.index)
-            unembedded_df = df.loc[unembedded_indices]
-            unembedded_filename = (
-                f"{self.embed_params.unembedded_file_dir}/"
-                f"{self.embed_params.unembedded_file_suffix}_"
-                f"{basename}"
-            )
-            unembedded_df.to_csv(unembedded_filename)
+        self.save_unembedded_data(df, embedded_df, filename)
 
-        os.remove(filename)
-
-
-    def cache_embedded_chunks(
-        self,
-        chunks: list[pd.DataFrame], 
-        filename: str
-    ) -> None:
-        print("EmbedService: caching embedded chunks...")
-        for chunk in chunks:
-            indices = chunk.indices
-            embeddings = chunk.embeddings
-
-        df: pd.DataFrame
-        df = pd.merge(df, embeddings, left_index=True, right_index=True)
-        df.to_csv()
-
-
-    def write_unembbeded_chunks(
-        self, df: pd.DataFrame, 
-        chunks: list[pd.DataFrame], 
-        filename: str
-    ) -> None:
-        print("EmbedService: writing unembedded chunks...")
-        embeddings = pd.concat([chunk.embeddings for chunk in chunks])
-        df = pd.merge(df, embeddings, left_index=True, right_index=True)
-        df.to_csv()
-        
 
     def token_count(
         self, 
@@ -184,10 +159,18 @@ class EmbedService(BaseService):
         print("EmbedService: parallel embedding chunks...")
         results: List[pd.DataFrame]
 
+        start = time.perf_counter()
+        start_amt = self.tokens_embedded
+
         with ThreadPoolExecutor(
             max_workers=self.embed_params.max_workers
         ) as executor:
             results = list(executor.map(self.embed_chunk, chunks))
+
+        end = time.perf_counter() - start
+
+        total_amt = self.tokens_embedded - start_amt
+        print(f"EmbedService: embedded {total_amt} tokens in {end:0.2f} seconds")
 
         return results
 
@@ -197,14 +180,17 @@ class EmbedService(BaseService):
         chunk: pd.DataFrame 
     ) -> pd.DataFrame:
         """Get embeddings of a chunk of text from OpenAI"""
-        print("EmbedService: embedding one chunk...")
         with self.api_lock:
             if self.api_calls >= self.embed_params.requests_per_day_limit:
+                print("EmbedService: max api calls reached.")
                 return pd.DataFrame()
 
         text = chunk[self.embed_params.text_column]
-        
-        embed_response = self.api_call(text)
+        token_count = sum(chunk['n_tokens'])
+        embed_response = self.api_call(
+            text = text, 
+            token_count = token_count
+        )
 
         embeddings_df = pd.DataFrame(
             np.nan, 
@@ -222,6 +208,9 @@ class EmbedService(BaseService):
         chunk = pd.concat([chunk, embeddings_df], axis=1)
         chunk = chunk.drop([self.embed_params.text_column], axis=1)
 
+        with self.token_lock:
+            self.tokens_embedded += sum(chunk['n_tokens'])
+
         return chunk
 
 
@@ -231,24 +220,50 @@ class EmbedService(BaseService):
     )
     def api_call(
         self, 
-        text: pd.Series[str]
+        text: pd.Series[str],
+        token_count: int
     ) -> list[openai.openai_object.OpenAIObject]:
+        self.token_rate_limiter.add_and_wait_if_needed(token_count)
         self.rate_limit.wait()
-        print("EmbedService: api call with retry...")
+
+        print(f"EmbedService: api call #{self.api_calls + 1}.")
 
         self.increase_api_count()
-
-        embed_response = openai.Embedding.create(
+        response = openai.Embedding.create(
             input=text.to_list(), 
             model=self.embed_params.embedding_model
-        )["data"]
+        )
 
-        return embed_response
+        return response["data"]
 
 
     def increase_api_count(self):
         with self.api_lock:
             self.api_calls += 1
+
+
+    def save_embeddings(self, df: pd.DataFrame, filename: str) -> None:
+        print("EmbedService: saving embedded df...")
+        path = f"{self.embed_params.embedded_file_dir}/{filename}"
+        df.to_csv(path)
+
+
+    def save_unembedded_data(
+        self,
+        df: pd.DataFrame, 
+        embedded_df: pd.DataFrame,
+        filename: str
+    ) -> None:
+        if df.shape[0] != embedded_df.shape[0]:
+            print("EmbedService: saving unembedded df...")
+            indices = df.index.difference(embedded_df.index)
+            unembedded_df = df.loc[indices]
+            path = (
+                f"{self.embed_params.unembedded_file_dir}/"
+                f"{self.embed_params.unembedded_file_suffix}_"
+                f"{filename}"
+            )
+            unembedded_df.to_csv(path)
 
 
     def on_message(self, msg: Message) -> None:

@@ -1,15 +1,8 @@
-from enum import Enum
 import multiprocessing as mp
 
 # local
 from service import BaseService
-
-
-class Message(Enum):
-    QUERY_EXIT = "QueryServiceExit"
-    FETCH_EXIT = "FetchServiceExit"
-    EMBED_EXIT = "EmbedServiceExit"
-    STORE_EXIT = "StoreServiceExit"
+from event import Message
 
 
 class MessageBus():

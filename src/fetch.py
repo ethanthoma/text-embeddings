@@ -11,11 +11,12 @@ from google.cloud import bigquery as bq # type: ignore
 import multiprocessing as mp
 import os
 import pandas as pd
+from pathlib import Path
 import time
 
 # local
 from service import BaseService
-from message import Message
+from event import Message
 
 
 @dataclass
@@ -29,6 +30,8 @@ class FetchService(BaseService):
         super().__init__()
         self.fetch_params = fetch_params
         self.on_empty = lambda: time.sleep(1)
+
+        Path(fetch_params.cache_dir).mkdir(parents=True, exist_ok=True)
 
 
     def process(
@@ -52,7 +55,8 @@ class FetchService(BaseService):
             return
 
         filename = f"{index}_{index + size}.csv"
-        self.save_dataframe_to_file(df, filename)
+        save_path = f"{self.fetch_params.cache_dir}/{filename}"
+        self.save_dataframe_to_file(df, save_path)
         filename_queue.put(filename)
 
 

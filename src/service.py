@@ -5,7 +5,7 @@ import time
 from typing import Optional
 
 # local
-from message import Message
+from event import Message
 
 
 class BaseService:
@@ -32,8 +32,8 @@ class BaseService:
         print(f"{self.__class__.__name__}: exited.")
 
 
-    def process(self, *args) -> None:
-        print(f"{self.__class__.__name__}: nothing to process..?")
+    def process(self, *args):
+        pass
 
 
     def stop(self) -> None:
@@ -54,7 +54,7 @@ class BaseService:
 
 
     def on_message(self, msg: Message) -> None:
-        print(f"{self.__class__.__name__}: message {msg.name} found.")
+        pass
 
 
     def add_message_bus(

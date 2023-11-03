@@ -7,7 +7,7 @@ import time
 
 # local
 from service import BaseService
-from message import Message
+from event import Message
 
 
 @dataclass
