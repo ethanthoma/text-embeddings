@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from google.cloud import storage # type: ignore
 from io import BytesIO
 import multiprocessing as mp
-import os
 import pandas as pd
 import time
 from typing import Callable

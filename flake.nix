@@ -21,16 +21,6 @@
                 ];
 
                 shellHook = ''
-                    # set home locally
-                    LOCAL_HOME=$PWD/.home
-                    mkdir -p $LOCAL_HOME
-
-                    # dev env within shell
-                    ln -s $HOME/.config/nvim $LOCAL_HOME/.config/nvim
-                    ln -s $HOME/.config/starship.toml $LOCAL_HOME/.config/starship.toml
-
-                    export HOME=$LOCAL_HOME
-
                     # numpy
                     export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath buildInputs}:$LD_LIBRARY_PATH"
                     export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib.outPath}/lib:$LD_LIBRARY_PATH"

@@ -16,7 +16,7 @@ from embed import EmbedService, EmbedParams
 from store import StoreService, StoreParams
 
 
-ARG_DEFAULT_BATCH       = 10
+ARG_DEFAULT_BATCH       = -1
 ARG_DEFAULT_BUCKET      = "temp_embeddings"
 ARG_DEFAULT_INDEX       = 0
 ARG_DEFAULT_REQUESTS    = 0
@@ -71,6 +71,8 @@ if __name__ == "__main__":
 
     ns = parser.parse_args()
 
+    ns.batch = ns.size if ns.batch == ARG_DEFAULT_BATCH else ns.batch
+
     start = time.perf_counter()
 
     with mp.Manager() as manager:
@@ -84,7 +86,11 @@ if __name__ == "__main__":
         # define services
         services: list[tuple[BaseService, tuple[mp.Queue[Any], ...]]] = []
 
-        query_params = QueryParams(batch_size=ns.batch, size=ns.size)
+        query_params = QueryParams(
+            index=ns.index,
+            batch_size=ns.batch, 
+            size=ns.size
+        )
         services.append((
             QueryService(query_params),
             (sql_query_queue, )
