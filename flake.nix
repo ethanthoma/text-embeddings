@@ -14,10 +14,15 @@
             devShell = with pkgs; pkgs.mkShell rec {
                 buildInputs = [
                     # build
-                    python39
+                    python312
                     poetry
                     zlib
                     google-cloud-sdk
+
+                    # rust build for tiktoken
+                    llvmPackages.llvm
+                    llvmPackages.clang
+                    rustc
                 ];
 
                 shellHook = ''
@@ -29,7 +34,7 @@
                     set -a; source .env; set +a
 
                     # install python packages
-                    poetry install
+                    #poetry install
 
                     # gcloud
                     gcloud config set project $POETRY_PROJECT_ID
