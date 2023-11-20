@@ -5,17 +5,24 @@ def tpm(func):
     sig = signature(func)
     num_params = len(sig.parameters)
 
+    self_num_offset = 1 if 'self' in sig.parameters else 0
+
+    def has_len_tuple_to_map_to_args(args):
+        return (
+            len(args) == 1 + self_num_offset and 
+            isinstance(args[self_num_offset], tuple) and 
+            len(args[self_num_offset]) == num_params - self_num_offset
+        )
+
     @wraps(func)
     def wrapper(*args, **kwargs):
-        if 'self' in sig.parameters:
-            adjusted_num_params = num_params - 1
-            # unpack tuple
-            if len(args) > 1 and isinstance(args[1], tuple) and len(args[1]) == adjusted_num_params:
+        if has_len_tuple_to_map_to_args(args):
+            if 'self' in sig.parameters:
                 return func(args[0], *args[1])
-        else:
-            adjusted_num_params = num_params
-            if len(args) == 1 and isinstance(args[0], tuple) and len(args[0]) == adjusted_num_params:
+            else:
                 return func(*args[0])
+
+        adjusted_num_params = num_params - self_num_offset
 
         # If not enough arguments for partial application are provided, call the function as is.
         if len(args) + len(kwargs) >= adjusted_num_params:
